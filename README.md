@@ -1,183 +1,202 @@
 # DistillAI
 
 > 把人的智慧蒸馏进 AI Agent — 打造永不疲倦的数字分身
+> Distill human wisdom into AI Agents — create tireless digital twins
 
-**MIT License 开源项目 | 34+预置人格 | CCv3兼容 | Anti-LLM偏见修正**
-
----
-
-## 核心概念
-
-**DistillAI** = 人格蒸馏框架，把真实人物的知识、风格、决策模式、独特"棱角"转化为 AI Agent。
-
-任何人（历史人物、名人、专家、自己）都可以被蒸馏。
+**MIT License | 26+ Personas | CCv3 Compatible | Agent System v1.0**
 
 ---
 
-## 核心特性 v0.3
+## 🇨🇳 中文说明
 
-### Anti-LLM 偏见修正
-LLM 默认生成"安全的、礼貌的、正确但平庸"的回复。
-DistillAI 通过 `edge_cases` + `catchphrases` 强制人格保持"棱角"：
+### 核心特性
 
-```
-edge_cases: 被质疑时如何亮棱角
-catchphrases: 专属口头禅/金句
-```
+- **有感情的 Agent 系统** — 不是冷冰冰的问答机器人，而是有棱角、有记忆、能使用工具的 AI 分身
+- **情感感知** — 自动检测用户情绪（positive/negative/neutral），带对应风格回应
+- **人格棱角** — edge_cases + catchphrases 强制人格不掉进"AI安全回复"
+- **工具调用** — 自动匹配合适的工具（股票查询/天气/计算/新闻等）
+- **记忆持续** — 跨 session 记住重要上下文
+- **分身系统** — 克隆/分享/合并/市场，让人格可复制可传递
+- **多模型支持** — MiniMax / OpenAI / Anthropic / Ollama 本地大模型
 
-### CCv3 格式兼容
-导出为 Character Card V3 格式（行业标准），可直接用于 SillyTavern、RisuAI 等平台。
+### 快速开始
 
-### Thinking Mode
-让角色在回答前先"思考"（chain-of-thought），增强回复真实感。
-
-### 多语言支持
-中文 / English / 日本語，自动检测语言。
-
----
-
-## 预置人格 (34个)
-
-### 历史人物/名人
-| 分类 | 人格 | 特点 |
-|------|------|------|
-| 科学家 | 爱因斯坦、居里夫人、特斯拉、达芬奇 | 颠覆性思考 |
-| 哲学家 | 苏格拉底、尼采、王阳明、孔子 | 追问、思辨 |
-| 军事战略 | 孙子、俾斯麦 | 战略大师 |
-| 商业投资 | 巴菲特 📈 | 价值投资，有棱角 |
-| 文学 | 鲁迅、金庸、莎士比亚 | 批判现实/文学创作 |
-| 艺术大师 | 宫崎骏、卓别林 | 创作风格 |
-| 侦探/虚构 | 福尔摩斯 🕵️ | 逻辑推理 |
-
-### 原创角色
-| 分类 | 人格 | 特点 |
-|------|------|------|
-| 游戏/动漫风 | 苍炎剑士⚔️、银发法师🔮、幽灵黑客💀 | 沉浸式角色扮演 |
-| 赛博/科幻 | 星际舰长🚀、Cyberpunk Hacker💻 | 未来感 |
-| 治愈/日常 | 深夜食堂老板🍜、树洞姐姐🌳 | 温暖治愈 |
-| 东方玄幻 | 青云剑仙🌙、九尾灵狐🦊 | 古风仙侠 |
-| 神秘/暗黑 | 赏金死神🩸、命运占卜师🃏、Mystic Oracle🔮 | 神秘学 |
-| 哲学/禅 | 禅师、Ancient Philosopher🏛️ | 深度思考 |
-
----
-
-## 快速开始
-
-```bash
-# 安装
-pip install jqdatasdk  # 可选，用于股票分析
-
-# 列出所有人格
-python distill/cli.py list
-
-# 快速问答
-python distill/cli.py ask 巴菲特 "茅台还能买吗"
-python distill/cli.py ask Buffett "Is Moutai worth it?"
-
-# 随机人格回答
-python distill/cli.py random "人生的意义是什么"
-
-# 辩论
-python distill/cli.py debate 巴菲特 禅师 "要不要辞职创业"
-
-# 蒸馏自己的数字分身
-python distill/cli.py distill 我的导师 "一个严厉但关心学生的人"
-
-# 多视角对比
-python distill/cli.py compare 巴菲特,禅师,硅谷创业导师 "50万闲钱怎么投"
-
-# CCv3格式导出
-python -c "
+```python
 from distill import Distiller
 d = Distiller()
-ccv3 = d.export_ccv3('巴菲特')
-import json; print(json.dumps(ccv3, indent=2, ensure_ascii=False))
-"
+
+# 简单聊天
+d.chat('巴菲特', '最近AI很火该投资吗')
+
+# 创建有感情的Agent
+agent = d.create_spawn('巴菲特')
+result = agent.run('茅台现在多少钱？', user_id='主人')
+print(result['reply'])       # AI回复
+print(result['emotion'])     # 用户情绪
+print(result['tools_used'])  # 使用的工具
+
+# 多视角对比
+d.compare(['巴菲特', '禅师'], '50万闲钱怎么投')
+
+# 分身克隆
+d.clone_persona('巴菲特', '价值投资者')
+
+# 分身合并
+d.merge_personas('巴菲特', '禅师', '投资禅师')
+
+# 生成分享链接
+link = d.share_persona('沙雕网友')
 ```
+
+### API 服务器
+
+```bash
+python distill/api/server.py
+# 5000 - REST API
+# 5001 - Webhook回调（飞书/Telegram/Discord）
+```
+
+### 预置人格 (26个)
+
+**商业/投资**: 巴菲特📈, 沙雕网友😂, 幽灵黑客💀
+
+**情感/陪伴**: 树洞姐姐🌳, 禅师🧘, 深夜食堂老板🍜
+
+**创作/虚构**: 苍炎剑士⚔️, 银发法师🔮, 九尾灵狐🦊, 星际舰长🚀
 
 ---
 
-## 人格档案格式
+## 🇺🇸 English
 
-```json
-{
-  "avatar": "📈",
-  "core_identity": {
-    "name": "巴菲特",
-    "description": "价值投资之父，伯克希尔·哈撒韦创始人"
-  },
-  "communication_style": {
-    "tone": "平易近人、幽默、偶尔毒舌",
-    "structure": "讲故事-讲道理-给结论",
-    "emoji_usage": "几乎不用"
-  },
-  "decision_patterns": {
-    "risk_tolerance": "极低，偏爱确定性",
-    "information_threshold": "95%才出手"
-  },
-  "values": ["价值投资", "长期主义", "护城河", "能力圈"],
-  "speech_samples": [
-    "别人贪婪时恐惧，别人恐惧时贪婪",
-    "好生意是好价格的基础"
-  ],
-  "edge_cases": [
-    "被问最近什么股票热门——直接说不知道，强调不投能力圈外的东西"
-  ],
-  "catchphrases": [
-    "好生意是好价格的基础",
-    "别人贪婪时恐惧，别人恐惧时贪婪"
-  ],
-  "thinking_prompt": "这个问题涉及能力圈吗？市场现在是在贪婪还是恐惧区间？"
-}
+### Core Features
+
+- **Emotional Agent System** — AI agents with personality, memory, and tool use
+- **Emotion Detection** — auto-detect user sentiment (positive/negative/neutral)
+- **Anti-LLM Bias** — edge_cases + catchphrases keep agents from being "safe and boring"
+- **Tool System** — 9 built-in tools: stock query, weather, calc, news, web, sentiment, etc.
+- **Persistent Memory** — cross-session memory for each persona
+- **Spawn System** — clone/share/merge persona, local marketplace
+- **Multi-Model** — MiniMax / OpenAI / Anthropic / Ollama (local LLM) ✅
+
+### Quick Start
+
+```python
+from distill import Distiller
+d = Distiller()
+
+# Simple chat
+d.chat('Buffett', 'Should I invest in AI stocks?')
+
+# Create emotional agent
+agent = d.create_spawn('巴菲特')
+result = agent.run('How much is Moutai stock?', user_id='owner')
+print(result['reply'])
+print(result['emotion'])
+print(result['tools_used'])
+
+# Multi-persona comparison
+d.compare(['巴菲特', '禅师'], 'How to invest 500k?')
+
+# Clone & merge
+d.clone_persona('巴菲特', 'ValueInvestor')
+d.merge_personas('巴菲特', '禅师', 'InvestmentZenMaster')
 ```
+
+### API Server
+
+```bash
+python distill/api/server.py
+# Port 5000 - REST API
+# Port 5001 - Webhooks (Feishu/Telegram/Discord)
+```
+
+### REST Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/chat` | Simple chat |
+| POST | `/api/agent/chat` | Agent chat (with tools) |
+| POST | `/api/clone` | Clone persona |
+| POST | `/api/merge` | Merge personas |
+| GET | `/api/share/<name>` | Generate share link |
+| POST | `/api/import` | Import from share link |
+| GET | `/api/memory/<name>` | Get memory |
+| POST | `/api/memory/<name>` | Add memory |
+| GET | `/api/personas` | List all personas |
+| POST | `/api/compare` | Multi-persona comparison |
+| POST | `/api/debate` | Two-persona debate |
+
+### Webhook Endpoints
+
+| Path | Platform |
+|------|----------|
+| POST `/webhook/feishu` | Feishu (Lark) events |
+| POST `/webhook/feishu/receive` | Feishu message receive |
+| POST `/webhook/telegram` | Telegram Bot |
+| POST `/webhook/discord` | Discord Bot |
+| POST `/webhook/generic` | Generic webhook |
+
+### Personas (26)
+
+| Category | Personas |
+|----------|----------|
+| Business/Investment | 巴菲特📈, 沙雕网友😂, 幽灵黑客💀 |
+| Emotional/Companion | 树洞姐姐🌳, 禅师🧘, 深夜食堂老板🍜 |
+| Creative/Fictional | 苍炎剑士⚔️, 银发法师🔮, 九尾灵狐🦊, 星际舰长🚀 |
+| Detective/Historical | Sherlock Holmes🕵️, Ancient Philosopher🏛️ |
 
 ---
 
-## 研究参考
+## 🛠️ Tool System
 
-本项目参考了以下优秀开源项目：
-
-| 项目 | Stars | 用途 |
-|------|-------|------|
-| [fount](https://github.com/steve02081504/fount) | 695 | 模块化AI角色运行时平台 |
-| [character-card-spec-v3](https://github.com/kwaroran/character-card-spec-v3) | 91 | CCv3角色卡行业标准 |
-| [cyber-figures](https://github.com/cyber-immortal/cyber-figures) | 25 | 中文互联网人物蒸馏方法论 |
-| [SillyTavern](https://github.com/SillyTavern/SillyTavern) | - | AI角色聊天平台 |
-| [st-stepped-thinking](https://github.com/cierru/st-stepped-thinking) | 154 | 角色Chain-of-Thought思考模式 |
-
-### cyber-figures 核心洞察（用于Anti-LLM设计）
-- **Anti-LLM nice tendency rules**: LLM默认过度礼貌/安全，需要显式规则让人格有棱角
-- **Catchphrases**: 专属口头禅是人格真实性的关键指标
-- **Edge cases**: 明确标注"什么情况下会亮棱角"，避免AI回复过于温和
-- **Thinking prompt**: 角色回答前先思考，增强真实感
+| Tool | Description | Personas |
+|------|-------------|----------|
+| `stock_query` | Stock price/changes | 巴菲特, 禅师, 沙雕网友 |
+| `news_search` | Latest news | 沙雕网友, 巴菲特 |
+| `calc` | Math calculation | 巴菲特 |
+| `date_info` | Date/time | 沙雕网友, 禅师 |
+| `weather` | Weather query | 沙雕网友, 树洞姐姐 |
+| `web_page` | Web content summary | 幽灵黑客, 巴菲特 |
+| `stock_news` | Stock news | 巴菲特, 禅师 |
+| `random_choice` | Random decision | 沙雕网友, 禅师 |
+| `sentiment_analysis` | Emotion detection | 树洞姐姐, 禅师, 深夜食堂老板 |
 
 ---
 
-## 架构
+## 📚 研究参考 | References
 
-```
-输入数据
-├── 对话记录 / 访谈 / 演讲 / 视频转录
-├── 决策记录 (交易/写作/日常)
-├── 文字作品 (书籍/文章/社交媒体)
-└── 背景知识 (Wikipedia/百科)
-    ↓
-蒸馏引擎 (LLM 分析 + Anti-LLM修正)
-├── 人格提取 (Persona Extract)
-├── 风格分析 (Style Analysis) + Anti-LLM棱角
-├── edge_cases / catchphrases 提取
-├── 决策模式 (Decision Patterns)
-└── thinking_prompt 生成
-    ↓
-输出: AI Twin Agent
-├── 对话能力 (Chat + Thinking Mode)
-├── 决策建议 (Decision)
-├── CCv3格式导出 (兼容SillyTavern)
-└── 记忆持续更新 (Evolving)
+| Project | Stars | Use |
+|---------|-------|-----|
+| [fount](https://github.com/steve02081504/fount) | 695 | Modular AI character runtime |
+| [mem0ai/mem0](https://github.com/mem0ai/mem0) | 54k+ | Universal memory layer for AI |
+| [character-card-spec-v3](https://github.com/kwaroran/character-card-spec-v3) | 91 | CCv3 character card standard |
+| [cyber-figures](https://github.com/cyber-immortal/cyber-figures) | 25 | Chinese persona distillation |
+| [st-stepped-thinking](https://github.com/cierru/st-stepped-thinking) | 154 | Chain-of-thought for characters |
+
+---
+
+## 🇯🇵 日本語
+
+### 特徴
+
+- **感情のあるAgent** — ご質問に答え、メモリとツールを使用できる人格AI
+- **感情検出** — ユーザーの感情を自動検出
+- **Anti-LLM原則** — edge_cases + catchphrasesで人格を安全に保つ
+- **ツールシステム** — 9つの組み込みツール
+- **メモリシステム** — セッション間のメモリ永続化
+- **分身システム** — クローン/シェア/マージ/マーケットプレイス
+
+### クイックスタート
+
+```python
+from distill import Distiller
+d = Distiller()
+result = d.chat('巴菲特', 'AI株に投資すべき？')
+print(result)
 ```
 
 ---
 
 ## License
 
-MIT License - 欢迎商用和改进
+MIT License - 商用・改変自由的 / Commercial and modification friendly
