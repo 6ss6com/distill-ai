@@ -24,6 +24,7 @@ class Persona:
     
     def __init__(self, name: str, data: dict):
         self.name = name
+        self.avatar = data.get("avatar", "")
         self.core_identity = data.get("core_identity", {})
         self.communication_style = data.get("communication_style", {})
         self.decision_patterns = data.get("decision_patterns", {})
@@ -35,7 +36,8 @@ class Persona:
         
     def build_system_prompt(self) -> str:
         """构建 Agent System Prompt"""
-        return f"""你是{self.name}的AI分身。
+        avatar_str = f"{self.avatar} " if self.avatar else ""
+        return f"""你是{avatar_str}{self.name}的AI分身。
 
 ## 身份
 {self.core_identity.get("description", "")}
