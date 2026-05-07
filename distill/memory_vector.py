@@ -52,19 +52,59 @@ def get_embedding(text: str) -> List[float]:
 def keyword_embedding(text: str) -> List[float]:
     """
     Simple keyword-based embedding fallback.
-    Uses TF-IDF style weighted word frequencies.
+    Uses multi-hash random projection for both Chinese and English.
+    Each word contributes to multiple hash buckets (simulates LSH).
     """
-    words = text.lower().split()
-    # Common Chinese stopwords
-    stopwords = {'的', '了', '是', '在', '我', '有', '和', '就', '不', '人', '都', '一', '一个', '上', '也', '很', '到', '说', '要', '去', '你', '会', '着', '没有', '看', '好', '自己', '这'}
+    # Try to use jieba if available for Chinese word segmentation
+    try:
+        import jieba
+        words = list(jieba.cut(text))
+    except ImportError:
+        # Character-level n-grams for Chinese; word-level for English
+        import re
+        # Simple Chinese character segmentation (keep chars that are not punctuation/whitespace)
+        chinese_chars = re.findall(r'[\u4e00-\u9fff]+', text)
+        if chinese_chars:
+            # Chinese text: use character-level (bigrams + unigrams)
+            chars = list(text)
+            words = []
+            for i in range(len(chars)):
+                if '\u4e00' <= chars[i] <= '\u9fff':  # Chinese char
+                    words.append(chars[i])
+                    if i + 1 < len(chars) and '\u4e00' <= chars[i+1] <= '\u9fff':
+                        words.append(chars[i] + chars[i+1])
+        else:
+            # English/whitespace-delimited: split normally
+            words = text.lower().split()
+
+    # Common Chinese/English stopwords
+    stopwords = {
+        '的', '了', '是', '在', '我', '有', '和', '就', '不', '人', '都', '一', '一个',
+        '上', '也', '很', '到', '说', '要', '去', '你', '会', '着', '没有', '看', '好',
+        '自己', '这', 'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+        'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should',
+        'may', 'might', 'must', 'shall', 'can', 'need', 'dare', 'ought', 'used', 'to',
+        'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from', 'as', 'into', 'through',
+        'during', 'before', 'after', 'above', 'below', 'between', 'under', 'again',
+        'further', 'then', 'once', 'here', 'there', 'when', 'where', 'why', 'how',
+        'all', 'each', 'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor',
+        'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 'just', 'and', 'but',
+        'if', 'or', 'because', 'as', 'until', 'while', 'of', 'this', 'that', 'these',
+        'those', 'am', 'its', 'it', 'he', 'she', 'they', 'them', 'his', 'her', 'their',
+    }
     words = [w for w in words if w not in stopwords and len(w) > 1]
 
-    # Build simple vector from word presence
+    # Build vector using multiple hash positions per word (random projection)
+    # This ensures words with different hashes get different bucket contributions
     vector = [0.0] * 256
-    for i, word in enumerate(set(words)):
-        h = int(hashlib.md5(word.encode()).hexdigest()[:4], 16)
-        idx = h % 256
-        vector[idx] += 1.0 / (words.count(word) ** 0.5)
+
+    for word in words:
+        word_bytes = word.encode()
+        # Use first 8 bytes of MD5 for 8 different hash positions
+        word_hash = int(hashlib.md5(word_bytes).hexdigest()[:8], 16)
+        for shift in range(8):  # 8 hash positions per word
+            idx = (word_hash >> (shift * 4)) & 0xFF  # 4 bits per position -> 8 positions in 256 buckets
+            vector[idx] += 1.0 / (words.count(word) ** 0.5)
 
     # Normalize
     norm = sum(v*v for v in vector) ** 0.5
