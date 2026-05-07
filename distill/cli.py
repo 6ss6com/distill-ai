@@ -1,415 +1,512 @@
 """
-DistillAI 简单CLI - 多种使用方式
+DistillAI CLI - Bilingual Chat / 多语言人格对话系统
+Supports: 中文 English 日本語
 
-使用示例:
-  python distill.py chat 巴菲特        # 和巴菲特聊天
-  python distill.py chat 禅师 禅师问   # 问禅师一个问题
-  python distill.py ask 巴菲特 "茅台还能买吗"  # 快速问答
-  python distill.py scenario 投资建议  # 预设场景问答
-  python distill.py debate 巴菲特 马斯克 "茅台vs特斯拉哪个更值得投资"  # 两人辩论
-  python distill.py compare 孙子里斯 "要不要跳槽"  # 多人对比
-  python distill.py list              # 列出所有人格
-  python distill.py recommend 投资 "我有10万闲钱"  # 根据情况推荐合适人格
+Usage:
+  python distill.py ask 巴菲特 "茅台值得买吗"        # 中文
+  python distill.py ask Buffett "Is Moutai worth it?"  # English
+  python distill.py random "生命的意义是什么"         # 随机人格
+  python distill.py distill 鲁迅 "中国现代文学家"   # 蒸馏自定义人格
+  python distill.py list --lang en                  # English persona list
+  python distill.py --config                        # Show config
+
+Platform: Windows / macOS / Linux 自动适配
 """
 
 import sys
+import os
+import random
+import platform
 from pathlib import Path
-# Add workspace to path so minimax_client can be found
-WORKSPACE = Path(r'C:\Users\Administrator\.openclaw\workspace')
+
+# ---- Path setup (cross-platform) ----
+WORKSPACE = Path(r"C:\Users\Administrator\.openclaw\workspace")
+if not WORKSPACE.exists():
+    WORKSPACE = Path.home() / ".openclaw" / "workspace"
+if not WORKSPACE.exists():
+    WORKSPACE = Path(__file__).parent.parent
+
 sys.path.insert(0, str(WORKSPACE))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from distill import Distiller
-from distill.presets_extended import PRESET_PERSONAS_EXTENDED
 
-ALL_PRESETS = PRESET_PERSONAS_EXTENDED
+# ---- Language detection ----
+def detect_lang(text: str) -> str:
+    """Auto-detect language from text"""
+    # Count Chinese characters
+    chinese = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+    japanese = sum(1 for c in text if '\u3040' <= c <= '\u309f' or '\u30a0' <= c <= '\u30ff')
+    total = len(text.strip())
+    if total == 0:
+        return "zh"
+    if chinese / total > 0.3:
+        return "zh"
+    if japanese / total > 0.3:
+        return "ja"
+    return "en"
 
 
-# ============ 预设场景 ============
-SCENARIOS = {
-    # === 投资理财 ===
-    "投资建议": "用{persona}的风格，给出投资建议。情况：{situation}",
-    "选股分析": "你是{persona}，分析{stock}这只股票，给出是否值得投资的判断",
-    "理财诊断": "你是{persona}，分析以下理财状况，给出优化建议：{situation}",
-    "风险评估": "你是{persona}，评估以下投资风险：{situation}",
-
-    # === 写作助手 ===
-    "情书": "以{persona}的风格，写一封情书，表达{sentiment}的情感",
-    "分手信": "以{persona}的风格，写一封分手信，要{tone}",
-    "道歉信": "以{persona}的风格，写一封道歉信，内容：{content}",
-    "演讲稿": "以{persona}的风格，写一篇{speech_type}的演讲稿，主题：{topic}",
-    "朋友圈文案": "以{persona}的风格，写一条{sentiment}的朋友圈，配图是{scene}",
-    "短视频脚本": "以{persona}的风格，写一个{topic}主题的短视频脚本，时长30秒",
-    "小说开头": "以{persona}的风格，写一篇{genre}类型小说的开头，吸引读者",
-
-    # === 决策顾问 ===
-    "跳槽建议": "你是{persona}，分析是否应该跳槽：{situation}",
-    "创业评估": "你是{persona}，评估这个创业想法的可行性：{idea}",
-    "人生抉择": "你是{persona}，帮我分析这个人生选择：{choice}",
-    "买房建议": "你是{persona}，给出买房建议：{situation}",
-
-    # === 学习教育 ===
-    "物理讲解": "以{persona}的风格，向小学生解释{concept}，要生动有趣",
-    "历史故事": "以{persona}的风格，讲一个关于{event}的历史故事",
-    "学习方法": "以{persona}的学习方法论，给出学习{subject}的建议",
-    "思维训练": "以{persona}的思维方式，解决这个问题：{problem}",
-
-    # === 心理情感 ===
-    "心理咨询": "以{persona}的智慧，给我一些情感建议：{situation}",
-    "职场解压": "以{persona}的风格，给职场压力建议：{situation}",
-    "告别过去": "以{persona}的风格，帮助我放下{situation}",
-
-    # === 商业经营 ===
-    "营销方案": "以{persona}的思维，设计一个{s_product}的营销方案",
-    "管理建议": "以{persona}的管理风格，给出团队管理建议：{situation}",
-    "商业谈判": "以{persona}的谈判风格，准备一场关于{topic}的谈判",
-    "品牌定位": "以{persona}的战略眼光，分析品牌定位：{brand}",
-
-    # === 创意娱乐 ===
-    "设计灵感": "以{persona}的审美，给出{design_type}的设计灵感：{brief}",
-    "取名": "以{persona}的智慧，给{name_type}取一个有内涵的名字",
-    "解梦": "以{persona}的风格，解这个梦的含义：{dream}",
-    "算命": "以{persona}的智慧，给出命运指引：{situation}",
+# ---- Bilingual strings ----
+STRINGS = {
+    "zh": {
+        "title": "DistillAI - 人格蒸馏对话系统",
+        "avail": "可用人格",
+        "ask_usage": "用法: python distill.py ask <人格> <问题>",
+        "chat_usage": "用法: python distill.py chat <人格>",
+        "not_found": "人格 '{name}' 不存在，请先 python distill.py list",
+        "蒸馏完成": "人格蒸馏完成！",
+        "沟通风格": "沟通风格",
+        "价值观": "价值观",
+        "现在可以": "现在可以对话",
+        "random_title": "随机人格",
+        "selected": "随机选中了",
+        "debate_title": "辩论赛",
+        "pos": "正方",
+        "neg": "反方",
+        "topic": "辩题",
+        "opening": "开场",
+        "counter": "反驳",
+        "final": "最终回应",
+        "compare_title": "多视角对比",
+        "answer_from": "的答案",
+        "recommend_title": "人格推荐",
+        "situation": "你的情况",
+        "recommended": "推荐",
+        "scenarios": "可用场景",
+        "list_header": "列出所有人格",
+        "config_header": "系统配置",
+        "platform": "平台",
+        "personas_count": "人格总数",
+        "help_cmds": "可用命令",
+        "unknown_cmd": "未知命令",
+    },
+    "en": {
+        "title": "DistillAI - Persona Distillation Chat",
+        "avail": "Available Personas",
+        "ask_usage": "Usage: python distill.py ask <persona> <question>",
+        "chat_usage": "Usage: python distill.py chat <persona>",
+        "not_found": "Persona '{name}' not found. Run: python distill.py list",
+        "distill_done": "Persona distilled successfully!",
+        "style": "Communication Style",
+        "values": "Values",
+        "now_chat": "Now chat with:",
+        "random_title": "Random Persona",
+        "selected": "Randomly selected",
+        "debate_title": "Debate",
+        "pos": "Pro",
+        "neg": "Con",
+        "topic": "Topic",
+        "opening": "Opening",
+        "counter": "Rebuttal",
+        "final": "Final",
+        "compare_title": "Multi-Perspective",
+        "answer_from": "'s Answer",
+        "recommend_title": "Persona Recommender",
+        "situation": "Your situation",
+        "recommended": "Recommended",
+        "scenarios": "Available Scenarios",
+        "list_header": "List All Personas",
+        "config_header": "System Config",
+        "platform": "Platform",
+        "personas_count": "Total Personas",
+        "help_cmds": "Available Commands",
+        "unknown_cmd": "Unknown command",
+    }
 }
 
+def _(key: str, lang: str = "zh") -> str:
+    return STRINGS.get(lang, STRINGS["zh"]).get(key, STRINGS["zh"].get(key, key))
 
-def list_personas():
-    """列出所有人格"""
+
+# ---- Config ----
+CONFIG_FILE = Path(__file__).parent / "config.json"
+
+DEFAULT_CONFIG = {
+    "lang": "auto",  # auto / zh / en / ja
+    "default_persona": "金",
+    "random_exclude": ["金"],
+    "theme": "default",  # default / dark
+}
+
+def load_config() -> dict:
+    if CONFIG_FILE.exists():
+        try:
+            import json
+            return {**DEFAULT_CONFIG, **json.loads(CONFIG_FILE.read_text())}
+        except:
+            pass
+    return DEFAULT_CONFIG.copy()
+
+def save_config(cfg: dict):
+    try:
+        import json
+        CONFIG_FILE.write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
+    except:
+        pass
+
+
+# ---- Personas ----
+def list_personas(lang: str = "zh"):
     personas_dir = Path(__file__).parent / "personas"
-    if not personas_dir.exists():
-        print("No personas found. Run distill_from_workspace() first.")
-        return
+    files = sorted([f.stem for f in personas_dir.glob("*.json") if f.suffix == ".json"])
 
-    files = sorted([f.stem for f in personas_dir.glob("*.json")])
+    cfg = load_config()
+    exclude = cfg.get("random_exclude", ["金"])
 
-    # 按分类整理
-    categories = {
+    print(f"\n{'='*55}")
+    print(f"  DistillAI  {_( 'title', lang)} ({len(files)} {_( 'personas_count', lang)})")
+    print(f"  Platform: {platform.system()} | Python: {platform.python_version()}")
+    print(f"{'='*55}")
+
+    categories_zh = {
+        "剑士/冒险": ["苍炎剑士"],
+        "法师/魔法": ["银发法师", "青云剑仙"],
+        "赛博/科幻": ["幽灵黑客", "星际舰长"],
+        "东方玄幻": ["九尾灵狐"],
+        "治愈/日常": ["深夜食堂老板", "森林精灵", "树洞姐姐"],
+        "神秘/暗黑": ["赏金死神", "命运占卜师", "沙雕网友"],
         "科学家": ["爱因斯坦", "居里夫人", "特斯拉", "达芬奇"],
         "哲学家": ["苏格拉底", "尼采", "王阳明", "孔子"],
         "军事战略": ["孙子", "俾斯麦"],
         "政治领袖": ["林肯"],
         "艺术大师": ["宫崎骏", "卓别林", "莎士比亚", "金庸"],
         "商业投资": ["巴菲特"],
-        "文学": ["鲁迅"],
-        "侦探/虚构": ["夏洛克·福尔摩斯"],
+        "公版角色": ["夏洛克·福尔摩斯"],
         "原创角色": ["时间领主", "硅谷创业导师", "禅师"],
-        "个人": ["金"],
+        "个人蒸馏": ["金"],
     }
 
-    print("\n" + "=" * 50)
-    print("  DistillAI 可用人格 (" + str(len(files)) + "个)")
-    print("=" * 50)
+    categories_en = {
+        "Warrior/Adventure": ["苍炎剑士"],
+        "Magic/Fantasy": ["银发法师", "青云剑仙"],
+        "Cyber/Sci-fi": ["幽灵黑客", "星际舰长"],
+        "Eastern Fantasy": ["九尾灵狐"],
+        "Healing/Daily": ["深夜食堂老板", "森林精灵", "树洞姐姐"],
+        "Dark/Mysterious": ["赏金死神", "命运占卜师", "沙雕网友"],
+        "Scientist": ["爱因斯坦", "居里夫人", "特斯拉", "达芬奇"],
+        "Philosopher": ["苏格拉底", "尼采", "王阳明", "孔子"],
+        "Military/Strategy": ["孙子", "俾斯麦"],
+        "Political Leader": ["林肯"],
+        "Art Master": ["宫崎骏", "卓别林", "莎士比亚", "金庸"],
+        "Business/Invest": ["巴菲特"],
+        "Public Domain": ["夏洛克·福尔摩斯"],
+        "Original": ["时间领主", "硅谷创业导师", "禅师"],
+        "Personal": ["金"],
+    }
+
+    categories = categories_en if lang == "en" else categories_zh
+
     for cat, names in categories.items():
-        available = [n for n in names if n in files]
+        available = [n for n in names if n in files and n not in exclude]
         if available:
-            print(f"\n  【{cat}】")
+            print(f"\n  [{cat}]")
             for n in available:
-                print(f"    {n}")
+                try:
+                    from distill import Persona
+                    p = Persona(n, {})
+                    p = load_persona_raw(n)
+                    avatar = p.get("avatar", "")
+                    if avatar:
+                        print(f"    {avatar} {n}")
+                    else:
+                        print(f"    - {n}")
+                except:
+                    print(f"    - {n}")
 
-    print("\n  【使用方式】")
-    print("    python distill.py ask 巴菲特 '茅台还能买吗'")
-    print("    python distill.py scenario 投资建议")
-    print("    python distill.py debate 巴菲特 马斯克 '哪个更值得投资'")
+    print(f"\n{'='*55}")
+    print(f"  {_( 'help_cmds', lang)}:")
+    print(f"    ask <persona> <question>     - Quick Q&A")
+    print(f"    chat <persona>               - Interactive chat")
+    print(f"    random <question>            - Random persona answers")
+    print(f"    distill <name> <desc>        - Distill custom persona")
+    print(f"    debate <A> <B> <topic>      - Two-person debate")
+    print(f"    compare <A,B> <question>    - Multi-perspective")
+    print(f"    recommend <situation>       - Recommend a persona")
+    print(f"    list --lang en              - English persona list")
 
 
-def chat_persona(name: str, message: str):
-    """和人格聊天"""
+def load_persona_raw(name: str) -> dict:
+    path = Path(__file__).parent / "personas" / f"{name}.json"
+    if not path.exists():
+        return {}
+    import json
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def chat_persona(name: str, message: str, lang: str = "auto"):
+    """Chat with a persona, auto-detecting language"""
+    if lang == "auto":
+        lang = detect_lang(message)
+
     d = Distiller()
     try:
         reply = d.chat(name, message)
-        print(f"\n【{name}】\n{reply}")
-    except FileNotFoundError:
-        print(f"人格 '{name}' 不存在。请先运行: python distill.py list")
+        reply_lang = detect_lang(reply)
 
-
-def ask_persona(name: str, question: str):
-    """快速问答"""
-    chat_persona(name, question)
-
-
-def run_scenario(scenario_name: str, params: dict = None):
-    """运行预设场景"""
-    if scenario_name not in SCENARIOS:
-        print(f"未知场景: {scenario_name}")
-        print(f"可用场景: {list(SCENARIOS.keys())}")
-        return
-
-    d = Distiller()
-
-    # 如果没有传参数，交互式获取
-    if not params:
-        print(f"\n=== 场景: {scenario_name} ===")
-        # 从场景描述中提取变量
-        template = SCENARIOS[scenario_name]
-        vars_needed = set()
-        import re
-        for m in re.finditer(r'\{(\w+)\}', template):
-            vars_needed.add(m.group(1))
-
-        params = {}
-        for v in vars_needed:
-            if v == "persona":
-                continue  # persona 单独指定
-            params[v] = input(f"  {v}: ").strip()
-
-    # 如果params里没有persona，让用户选择
-    if "persona" not in params:
-        print("\n选择人格 (留空推荐最合适的):")
-        print("  1 巴菲特(投资)  2 禅师(智慧)  3 苏格拉底(思辨)  4 爱因斯坦(科学)")
-        print("  5 孙子(战略)    6 硅谷创业导师(创业)  7 金(你自己)")
-        choice = input("  选择: ").strip()
-        choice_map = {
-            "1": "巴菲特", "2": "禅师", "3": "苏格拉底", "4": "爱因斯坦",
-            "4": "爱因斯坦", "5": "孙子", "6": "硅谷创业导师", "7": "金"
-        }
-        params["persona"] = choice_map.get(choice, "巴菲特")
-
-    # 渲染模板
-    template = SCENARIOS[scenario_name]
-    try:
-        prompt = template.format(**params)
-    except KeyError as e:
-        print(f"缺少参数: {e}")
-        return
-
-    print(f"\n【{params['persona']}】\n")
-    reply = d.chat(params["persona"], prompt)
-    print(reply)
-
-
-def persona_debate(name1: str, name2: str, topic: str):
-    """两人辩论"""
-    d = Distiller()
-    prompt = f"""你是一场辩论赛的一方。
-
-辩题是：「{topic}」
-
-你是「{name1}」，请从{name1}的立场出发，针对这个话题发表观点。
-
-要求：
-- 保持{name1}的说话风格和思维方式
-- 提出有力的论点
-- 可以反驳对方可能的观点
-
-你的开场陈述："""
-
-    print(f"\n=== 辩论赛 ===")
-    print(f"辩题: {topic}")
-    print(f"正方: {name1} | 反方: {name2}")
-    print(f"\n--- 正方 {name1} 开场 ---\n")
-
-    r1 = d.chat(name1, prompt)
-    print(r1)
-
-    counter_prompt = f"""接上辩论。
-
-反方「{name2}」刚才说：{r1[:300]}...
-
-现在你是「{name2}」，请从{name2}的立场反驳上述观点，并给出自己的论点。
-
-要求：
-- 保持{name2}的说话风格
-- 直接针对对方的论点进行反驳
-- 提出有力反例
-
-你的反驳："""
-
-    print(f"\n--- 反方 {name2} 反驳 ---\n")
-    r2 = d.chat(name2, counter_prompt)
-    print(r2)
-
-    # 正方回应
-    rebuttal = f"""继续辩论。
-
-正方「{name1}」刚才的反驳：{r2[:300]}...
-
-正方「{name1}」的最终回应（总结观点，回应质疑）："""
-    print(f"\n--- 正方 {name1} 最终回应 ---\n")
-    r3 = d.chat(name1, rebuttal)
-    print(r3)
-
-
-def compare_personas(names: list, question: str):
-    """多人对比：同一问题，多个视角"""
-    d = Distiller()
-    print(f"\n=== 问题对比 ===")
-    print(f"问题: {question}\n")
-
-    results = {}
-    for name in names:
+        # Show avatar if available
         try:
-            reply = d.chat(name, question)
-            results[name] = reply
+            p = load_persona_raw(name)
+            avatar = p.get("avatar", "")
+        except:
+            avatar = ""
+
+        if avatar:
+            print(f"\n{avatar} 【{name}】\n{reply}")
+        else:
+            print(f"\n【{name}】\n{reply}")
+    except FileNotFoundError:
+        print(_("not_found", lang).format(name=name))
+
+
+def cmd_ask(args, lang: str = "auto"):
+    if lang == "auto":
+        lang = detect_lang(args.question)
+    chat_persona(args.persona, args.question, lang)
+
+
+def cmd_random(args, lang: str = "auto"):
+    if lang == "auto":
+        lang = detect_lang(args.question) if args.question else "zh"
+
+    personas_dir = Path(__file__).parent / "personas"
+    cfg = load_config()
+    exclude = cfg.get("random_exclude", ["金"])
+
+    all_p = [f.stem for f in personas_dir.glob("*.json") if f.stem not in exclude]
+    chosen = random.choice(all_p)
+
+    avatar = ""
+    try:
+        p = load_persona_raw(chosen)
+        avatar = p.get("avatar", "")
+    except:
+        pass
+
+    print(f"\n  [Random] {chosen} {'-' if not avatar else avatar}\n")
+    chat_persona(chosen, args.question or "随便聊聊", lang)
+
+
+def cmd_distill(args, lang: str = "auto"):
+    if lang == "auto":
+        lang = "zh"
+
+    name = args.name.strip()
+    desc = args.description.strip() if args.description else ""
+
+    print(f"\n  Distilling custom persona: {name}...")
+    if desc:
+        print(f"  Description: {desc[:50]}...")
+
+    d = Distiller()
+    try:
+        persona = d.distill_from_files(name, [], desc)
+        avatar = getattr(persona, 'avatar', '') or ""
+        print(f"\n  [{avatar} {name}] Distilled successfully!")
+        print(f"  Style: {persona.communication_style.get('tone', 'N/A')}")
+        print(f"  Values: {', '.join(persona.values[:3])}")
+        print(f"\n  Now chat: python distill.py chat {name}")
+    except Exception as e:
+        print(f"  Distillation failed: {e}")
+
+
+def cmd_debate(args, lang: str = "auto"):
+    if lang == "auto":
+        lang = detect_lang(args.topic)
+
+    d = Distiller()
+    n1, n2, topic = args.pos, args.neg, args.topic
+
+    print(f"\n{'='*55}")
+    print(f"  Debate: {args.topic}")
+    print(f"  {n1}(+) vs {n2}(-)")
+    print(f"{'='*55}\n")
+
+    # Get avatar
+    p1 = load_persona_raw(n1)
+    p2 = load_persona_raw(n2)
+    a1 = p1.get("avatar", "")
+    a2 = p2.get("avatar", "")
+
+    r1 = d.chat(n1, f"你是{n1}，请对「{topic}」发表正方开场陈述。保持{n1}的说话风格。")
+    print(f"--- {a1} {n1} 开场陈述 ---\n{r1}\n")
+
+    r2 = d.chat(n2, f"你是{n2}，正方{n1}说：{r1[:200]}...\n请作为反方反驳，然后给出你的论点。")
+    print(f"--- {a2} {n2} 反驳+论点 ---\n{r2}\n")
+
+    r3 = d.chat(n1, f"继续辩论。反方{n2}说：{r2[:200]}...\n正方{n1}最终回应。")
+    print(f"--- {a1} {n1} 最终回应 ---\n{r3}\n")
+
+
+def cmd_compare(args, lang: str = "auto"):
+    if lang == "auto":
+        lang = detect_lang(args.question)
+
+    names = [n.strip() for n in args.personas.split(",")]
+    q = args.question
+
+    print(f"\n{'='*55}")
+    print(f"  Question: {q}")
+    print(f"{'='*55}\n")
+
+    d = Distiller()
+    for name in names:
+        avatar = ""
+        try:
+            p = load_persona_raw(name)
+            avatar = p.get("avatar", "")
+        except:
+            pass
+        try:
+            reply = d.chat(name, q)
+            print(f"--- {avatar} {name} ---\n{reply}\n")
         except FileNotFoundError:
-            results[name] = f"[人格 '{name}' 不存在]"
-
-    for i, (name, reply) in enumerate(results.items(), 1):
-        print(f"--- 【{name}】的答案 ---\n{reply}\n")
-        if i < len(results):
-            print("=" * 50 + "\n")
+            print(f"[{name}] not found\n")
 
 
-def recommend_persona(situation: str):
-    """根据情况推荐最合适的人格"""
-    prompt = f"""根据以下情况，推荐最合适的中国历史/现代人物或虚构角色来解决这个问题：
+def cmd_recommend(args, lang: str = "auto"):
+    if lang == "auto":
+        lang = detect_lang(args.situation)
 
-情况：{situation}
+    print(f"\n  Analyzing: {args.situation[:50]}...\n")
 
-候选人物：
-- 投资/理财问题 → 巴菲特
-- 战略/竞争问题 → 孙子、俾斯麦
-- 人生迷茫/情感问题 → 禅师、苏格拉底、王阳明
-- 创业/商业问题 → 硅谷创业导师、巴菲特
-- 科学/技术问题 → 爱因斯坦、特斯拉、达芬奇
-- 文学/写作问题 → 金庸、莎士比亚
-- 管理/领导问题 → 俾斯麦、孙子、曾国藩
-- 学习/教育问题 → 苏格拉底（追问法）、孔子
-- 艺术/创意问题 → 宫崎骏、达芬奇
-- 历史/文化问题 → 金庸、鲁迅、莎士比亚
+    prompt = f"""根据用户情况，推荐最合适的DistillAI人格。
 
-请直接给出推荐的人物名字，简要说明理由。
+情况：{args.situation}
+
+候选（选1-2个最合适的）：
+- 投资理财 → 巴菲特
+- 战略竞争 → 孙子、俾斯麦
+- 人生迷茫/情感 → 禅师、苏格拉底、王阳明
+- 创业商业 → 硅谷创业导师、巴菲特
+- 科学问题 → 爱因斯坦、特斯拉、达芬奇
+- 文学写作 → 金庸、莎士比亚
+- 管理领导 → 俾斯麦、孙子
+- 学习教育 → 苏格拉底、孔子
+- 游戏动漫风格 → 苍炎剑士、银发法师、幽灵黑客、九尾灵狐
+- 治愈日常 → 深夜食堂老板、森林精灵、树洞姐姐
+- 神秘暗黑 → 赏金死神、命运占卜师
+
+请直接给出推荐的人格名称和推荐理由（1-3句话）。
 
 推荐："""
 
     d = Distiller()
-    # 用金的人格来推荐
     reply = d.chat("金", prompt)
-    print(f"\n【推荐结果】\n{reply}")
+    print(f"  {reply}")
 
 
-def quick_use():
-    """交互式快速使用"""
-    print("\n" + "=" * 50)
-    print("  DistillAI 快速使用")
-    print("=" * 50)
-    print("  1. 和某人聊天")
-    print("  2. 运行预设场景")
-    print("  3. 两人辩论")
-    print("  4. 多人对比")
-    print("  5. 根据情况推荐人格")
-    print("  0. 列出所有人格")
-    print()
-    choice = input("选择: ").strip()
+# ---- CLI Entry ----
+import argparse
 
-    if choice == "1":
-        name = input("人格名称: ").strip()
-        q = input("问题: ").strip()
-        if name and q:
-            chat_persona(name, q)
+def main():
+    parser = argparse.ArgumentParser(
+        description="DistillAI - Bilingual Persona Chat CLI",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  中文: python distill.py ask 巴菲特 "茅台还能买吗"
+  英文: python distill.py ask Buffett "Is Moutai worth it?"
+  随机: python distill.py random "生命的意义是什么"
+  辩论: python distill.py debate 巴菲特 禅师 "要不要辞职创业"
+  对比: python distill.py compare 巴菲特,禅师,硅谷创业导师 "10万闲钱怎么投"
+  推荐: python distill.py recommend "我最近很迷茫，不知道该怎么做"
+  自定义: python distill.py distill 我的导师 "一个严厉但关心学生的人"
+  列表: python distill.py list --lang en
+        """
+    )
+    parser.add_argument("--lang", "-l", default="auto",
+                       help="Language: auto, zh, en (default: auto)")
+
+    sub = parser.add_subparsers(dest="cmd")
+
+    # ask
+    p = sub.add_parser("ask", help="Quick Q&A with a persona")
+    p.add_argument("persona", help="Persona name")
+    p.add_argument("question", help="Question", nargs="?")
+
+    # chat
+    p = sub.add_parser("chat", help="Interactive chat with persona")
+    p.add_argument("persona", help="Persona name")
+
+    # random
+    p = sub.add_parser("random", help="Random persona answers")
+    p.add_argument("question", help="Question", nargs="?")
+
+    # distill
+    p = sub.add_parser("distill", help="Distill custom persona")
+    p.add_argument("name", help="Persona name")
+    p.add_argument("description", help="Persona description", nargs="?")
+
+    # debate
+    p = sub.add_parser("debate", help="Two-person debate")
+    p.add_argument("pos", help="Pro persona")
+    p.add_argument("neg", help="Con persona")
+    p.add_argument("topic", help="Debate topic", nargs="?", default="这个问题")
+
+    # compare
+    p = sub.add_parser("compare", help="Multi-perspective comparison")
+    p.add_argument("personas", help="Comma-separated persona names")
+    p.add_argument("question", help="Question", nargs="?")
+
+    # recommend
+    p = sub.add_parser("recommend", help="Recommend best persona")
+    p.add_argument("situation", help="User situation", nargs="?")
+
+    # list
+    p = sub.add_parser("list", help="List all personas")
+
+    # config
+    p = sub.add_parser("config", help="Show/set config")
+    p.add_argument("--set", nargs="?", help="Set config value, e.g. --set lang=en")
+
+    args = parser.parse_args()
+
+    lang = args.lang if args.lang != "auto" else "auto"
+
+    if args.cmd is None:
+        parser.print_help()
+        return
+
+    if args.cmd == "list":
+        list_personas(lang)
+    elif args.cmd == "ask":
+        if not args.question:
+            args.question = input("Question: ").strip()
+        cmd_ask(args, lang)
+    elif args.cmd == "chat":
+        print(f"\n[Interactive chat with {args.persona}, type 'exit' to quit]\n")
+        while True:
+            q = input(f"{args.persona}> ").strip()
+            if q.lower() in ("exit", "quit", "q"):
+                break
+            if not q:
+                continue
+            chat_persona(args.persona, q, lang)
+    elif args.cmd == "random":
+        cmd_random(args, lang)
+    elif args.cmd == "distill":
+        cmd_distill(args, lang)
+    elif args.cmd == "debate":
+        cmd_debate(args, lang)
+    elif args.cmd == "compare":
+        cmd_compare(args, lang)
+    elif args.cmd == "recommend":
+        if not args.situation:
+            args.situation = input("Situation: ").strip()
+        cmd_recommend(args, lang)
+    elif args.cmd == "config":
+        cfg = load_config()
+        if args.set:
+            k, v = args.set.split("=", 1)
+            cfg[k.strip()] = v.strip()
+            save_config(cfg)
+            print(f"Set {k}={v}")
         else:
-            print("请输入人格名称和问题")
-    elif choice == "2":
-        print("\n可用场景:", ", ".join(SCENARIOS.keys()))
-        s = input("场景名称: ").strip()
-        if s in SCENARIOS:
-            run_scenario(s)
-        else:
-            print("未知场景")
-    elif choice == "3":
-        n1 = input("正方: ").strip()
-        n2 = input("反方: ").strip()
-        topic = input("辩题: ").strip()
-        if n1 and n2 and topic:
-            persona_debate(n1, n2, topic)
-    elif choice == "4":
-        names = input("人格列表(逗号分隔): ").strip().split(",")
-        q = input("问题: ").strip()
-        if names and q:
-            compare_personas([n.strip() for n in names], q)
-    elif choice == "5":
-        s = input("你的情况: ").strip()
-        if s:
-            recommend_persona(s)
-    elif choice == "0":
-        list_personas()
-    else:
-        print("无效选择")
+            print("\n[DistillAI Config]")
+            for k, v in cfg.items():
+                print(f"  {k}: {v}")
 
 
-# ============ 主入口 ============
 if __name__ == "__main__":
-    if len(sys.argv) == 1:
-        quick_use()
-        sys.exit()
-
-    cmd = sys.argv[1].lower()
-
-    if cmd == "list":
-        list_personas()
-
-    elif cmd == "chat":
-        # python distill.py chat 巴菲特 "问题内容"
-        if len(sys.argv) >= 3:
-            name = sys.argv[2]
-            message = sys.argv[3] if len(sys.argv) >= 4 else input("问题: ")
-            chat_persona(name, message)
-        else:
-            print("用法: python distill.py chat <人格> <问题>")
-
-    elif cmd == "ask":
-        # python distill.py ask 巴菲特 "茅台还能买吗"
-        if len(sys.argv) >= 4:
-            name = sys.argv[2]
-            question = sys.argv[3]
-            ask_persona(name, question)
-        else:
-            print("用法: python distill.py ask <人格> <问题>")
-
-    elif cmd == "scenario":
-        # python distill.py scenario 投资建议 persona=巴菲特 situation=...
-        scenario_name = sys.argv[2] if len(sys.argv) >= 3 else input("场景: ").strip()
-        if scenario_name not in SCENARIOS:
-            print("可用场景:")
-            for s in SCENARIOS:
-                print(f"  {s}")
-            sys.exit()
-
-        # 解析参数
-        params = {}
-        for arg in sys.argv[3:]:
-            if "=" in arg:
-                k, v = arg.split("=", 1)
-                params[k.strip()] = v.strip()
-
-        run_scenario(scenario_name, params if params else None)
-
-    elif cmd == "debate":
-        # python distill.py debate 巴菲特 马斯克 "哪个更值得投资"
-        if len(sys.argv) >= 5:
-            name1, name2 = sys.argv[2], sys.argv[3]
-            topic = sys.argv[4]
-            persona_debate(name1, name2, topic)
-        else:
-            print("用法: python distill.py debate <正方> <反方> <辩题>")
-
-    elif cmd == "compare":
-        # python distill.py compare 巴菲特,禅师,苏格拉底 "10万闲钱怎么投"
-        if len(sys.argv) >= 3:
-            names = [n.strip() for n in sys.argv[2].split(",")]
-            question = sys.argv[3] if len(sys.argv) >= 4 else input("问题: ")
-            compare_personas(names, question)
-        else:
-            print("用法: python distill.py compare <人格1,人格2,...> <问题>")
-
-    elif cmd == "recommend":
-        # python distill.py recommend "我有10万闲钱"
-        situation = sys.argv[2] if len(sys.argv) >= 3 else input("你的情况: ")
-        recommend_persona(situation)
-
-    elif cmd == "help":
-        print(__doc__)
-
-    else:
-        print(f"未知命令: {cmd}")
-        print("用法:")
-        print("  python distill.py list                        # 列出人格")
-        print("  python distill.py chat <人格> <问题>         # 和人格聊天")
-        print("  python distill.py ask <人格> <问题>          # 快速问答")
-        print("  python distill.py scenario <场景名>           # 运行预设场景")
-        print("  python distill.py debate <正方> <反方> <辩题> # 两人辩论")
-        print("  python distill.py compare <人格1,2> <问题>   # 多视角对比")
-        print("  python distill.py recommend <情况>           # 推荐适合的人格")
-        print()
-        print("场景列表:")
-        for s in SCENARIOS:
-            print(f"  {s}")
+    main()
