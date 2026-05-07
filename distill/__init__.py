@@ -399,8 +399,43 @@ User: {message}"""
         """列出所有可用人格"""
         return sorted([f.stem for f in self.persona_dir.glob("*.json")])
 
+    # ===== 分身系统 (Agent Spawn) =====
+    def create_spawn(self, name: str):
+        """创建并返回一个人格Agent分身"""
+        from .agent import Agent as AgentCls
+        return AgentCls(name)
 
-# ===== 导出 =====
+    def export_persona(self, name: str, include_memory: bool = True) -> dict:
+        """导出人格分身（用于分享）"""
+        from .spawn import export_agent, PersonaCard
+        agent = self.create_spawn(name)
+        return export_agent(agent, include_memory)
+
+    def import_persona(self, data: dict, new_name: str = None):
+        """导入人格分身"""
+        from .spawn import import_agent
+        return import_agent(data, new_name)
+
+    def clone_persona(self, source: str, new_name: str):
+        """克隆人格创建新分身"""
+        from .spawn import clone_agent
+        return clone_agent(source, new_name)
+
+    def merge_personas(self, name1: str, name2: str, new_name: str):
+        """合并两个人格创建新分身"""
+        from .spawn import merge_agents
+        return merge_agents(name1, name2, new_name)
+
+    def share_persona(self, name: str) -> str:
+        """生成分身分享链接"""
+        from .spawn import share_link
+        agent = self.create_spawn(name)
+        return share_link(agent)
+
+    def get_market(self):
+        """获取分身市场"""
+        from .spawn import DistillMarket
+        return DistillMarket()
 
 def load_persona(name: str, persona_dir: str = None) -> Persona:
     base = Path(__file__).parent if __file__ else Path(".")
