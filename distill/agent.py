@@ -111,14 +111,16 @@ class Agent:
             intensity = (data.get("pos", 0) + data.get("neg", 0)) / 2
             return sentiment, intensity
         except:
-            # 简单关键词检测
-            neg_words = ["焦虑", "担心", "害怕", "难过", "伤心", "亏", "失败", "压力", "烦", "郁闷"]
-            pos_words = ["开心", "高兴", "棒", "赞", "好", "赚", "顺利", "成功"]
-            msg = message.lower()
-            neg = sum(1 for w in neg_words if w in msg)
-            pos = sum(1 for w in pos_words if w in msg)
+            # 简单关键词检测（按完整词匹配，不按字符）
+            neg_words = ["焦虑", "担心", "害怕", "难过", "伤心", "亏", "失败", "压力", "烦", "郁闷", "痛苦", "委屈"]
+            pos_words = ["开心", "高兴", "棒", "赞", "好", "赚", "顺利", "成功", "快乐", "满意"]
+            neg = sum(1 for w in neg_words if w in message)
+            pos = sum(1 for w in pos_words if w in message)
+            # 特殊情况："压力大" 是负面，不是正面的"好"
+            if "压力大" in message or "压力好" in message:
+                neg += 1
             if neg > pos:
-                return "negative", 0.7
+                return "negative", 0.8
             elif pos > neg:
                 return "positive", 0.5
             return "neutral", 0.0
