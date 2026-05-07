@@ -1,22 +1,31 @@
 """
-DistillAI Flask API Server - 多端口商用手部署
+DistillAI Flask API Server v2.5 - Secured + Documented
 
-端口规划:
-- 5000: REST API (聊天/分身管理)
-- 5001: Webhook回调 (飞书/Discord/Telegram)
-- 5002: Admin管理面板
+Ports:
+- 5000: REST API (chat/persona management)
+- 5001: Webhook callbacks (Feishu/Discord/Telegram)
+- 5002: Admin panel
 
-启动方式:
+Security:
+- API Key authentication (Bearer token)
+- Role-based access (read/write/admin)
+- Rate limiting
+- Input sanitization
+- Jailbreak detection
+
+Launch:
     python distill/api/server.py
 
-API文档: GET /docs
-健康检查: GET /health
+API Docs: GET /docs
+Health: GET /health
 """
-import os, sys, json, threading
+
+import os, sys, json, re, threading
 from pathlib import Path
 from datetime import datetime
+from functools import wraps
 
-# 确保distill模块可导入
+# Ensure distill module is importable
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path.home() / ".openclaw" / "workspace"))
 
@@ -25,507 +34,742 @@ from distill import Distiller
 from distill.agent import Agent
 from distill.spawn import share_link, from_share_link
 
-# ===== 多端口启动 =====
-def create_app(port: int, debug: bool = False):
+
+# ============================================================
+# Security Import
+# ============================================================
+
+try:
+    from distill.security import (
+        APIKeyManager, RateLimiter, InputSanitizer, ContentFilter,
+        require_api_key, require_role, sanitize_input, check_content,
+        get_security, ensure_default_key
+    )
+    SECURITY_AVAILABLE = True
+except ImportError:
+    SECURITY_AVAILABLE = False
+    print("[WARN] Security module not available")
+
+
+# ============================================================
+# Swagger / OpenAPI
+# ============================================================
+
+try:
+    from flask_swagger_ui import get_swaggerui_blueprint
+    SWAGGER_AVAILABLE = True
+except ImportError:
+    SWAGGER_AVAILABLE = False
+
+
+# ============================================================
+# App Factory
+# ============================================================
+
+def create_app(port: int = 5000, debug: bool = False,
+               require_auth: bool = True, rate_limit: bool = True):
     app = Flask(__name__)
-    app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'distill-ai-secret-' + str(port))
-    app.port = port
+    app.config['DEBUG'] = debug
 
-    d = None  # lazy init
+    # Init security
+    sec = None
+    if SECURITY_AVAILABLE and require_auth:
+        sec = get_security()
+        ensure_default_key()
 
-    def get_distiller():
-        nonlocal d
-        if d is None:
-            d = Distiller()
-        return d
+    # Init distiller
+    distiller = Distiller()
 
-    # ===== 基础路由 =====
-    @app.route('/health', methods=['GET'])
+    # ========================================================
+    # Middleware: Sanitization + Content Filter
+    # ========================================================
+
+    @app.before_request
+    def security_middleware():
+        if not SECURITY_AVAILABLE or not require_auth:
+            return
+
+        # Skip health/docs endpoints
+        if request.path in ['/health', '/docs', '/swagger']:
+            return
+
+        # Check content (POST bodies)
+        if request.method in ['POST', 'PUT', 'PATCH']:
+            try:
+                data = request.get_json(silent=True) or {}
+                # Sanitize text fields
+                for key in ['message', 'prompt', 'content', 'text']:
+                    if key in data and isinstance(data[key], str):
+                        clean, threats = sanitize_input(data[key], strict=False)
+                        data[key] = clean
+
+                        risk, issues = check_content(data[key])
+                        if risk in ['danger', 'block']:
+                            return jsonify({
+                                "error": "Content policy violation",
+                                "risk": risk,
+                                "details": issues[:3]
+                            }), 400
+                # Store cleaned data
+                request._secured_data = data
+            except:
+                pass
+
+    # ========================================================
+    # Decorators
+    # ========================================================
+
+    def secure_require_key(f):
+        """Require valid API key"""
+        @wraps(f)
+        def decorated(*args, **kwargs):
+            if not SECURITY_AVAILABLE or not require_auth:
+                return f(*args, **kwargs)
+
+            auth = request.headers.get("Authorization", "")
+            if not auth.startswith("Bearer "):
+                return jsonify({"error": "Authorization header required", "code": "AUTH_REQUIRED"}), 401
+
+            key = auth[7:]
+            sec = get_security()
+            key_data = sec["key_manager"].verify_key(key)
+            if not key_data:
+                return jsonify({"error": "Invalid API key", "code": "AUTH_FAILED"}), 401
+
+            # Rate limit
+            if rate_limit:
+                allowed, info = sec["rate_limiter"].check(key, "key")
+                if not allowed:
+                    resp = jsonify({"error": "Rate limit exceeded", "code": "RATE_LIMITED", **info})
+                    resp.headers["Retry-After"] = str(info.get("retry_after", 60))
+                    return resp, 429
+
+            request.api_key_data = key_data
+            return f(*args, **kwargs)
+        return decorated
+
+    def secure_require_role(role: str):
+        """Require specific role"""
+        def decorator(f):
+            @wraps(f)
+            def decorated(*args, **kwargs):
+                if not SECURITY_AVAILABLE or not require_auth:
+                    return f(*args, **kwargs)
+                key_data = getattr(request, "api_key_data", None)
+                if not key_data:
+                    return jsonify({"error": "Not authenticated"}), 401
+                hierarchy = {"read": 1, "write": 2, "admin": 3}
+                user_level = hierarchy.get(key_data.get("role", ""), 0)
+                required = hierarchy.get(role, 0)
+                if user_level < required:
+                    return jsonify({"error": f"Requires {role} role"}), 403
+                return f(*args, **kwargs)
+            return decorated
+        return decorator
+
+    # ========================================================
+    # OpenAPI / Swagger Schema
+    # ========================================================
+
+    OPENAPI_SCHEMA = {
+        "openapi": "3.0.3",
+        "info": {
+            "title": "DistillAI API",
+            "description": "AI Persona Platform - DistillAI: 蒸馏人格AI平台，支持26种预训练人格、聊天、分身管理、记忆存储。",
+            "version": "2.5.0",
+            "contact": {"name": "DistillAI", "url": "https://github.com/6ss6com/distill-ai"}
+        },
+        "servers": [{"url": f"http://localhost:{port}"}],
+        "paths": {
+            "/health": {
+                "get": {
+                    "summary": "Health check",
+                    "responses": {"200": {"description": "OK"}}
+                }
+            },
+            "/api/chat": {
+                "post": {
+                    "summary": "Simple chat",
+                    "security": [{"BearerAuth": []}],
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["persona", "message"],
+                                    "properties": {
+                                        "persona": {"type": "string", "example": "巴菲特"},
+                                        "message": {"type": "string", "example": "茅台值得买吗？"},
+                                        "user_id": {"type": "string", "example": "user123"}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {"200": {"description": "Chat response"}}
+                }
+            },
+            "/api/agent/chat": {
+                "post": {
+                    "summary": "Full agent chat (with tools + emotion)",
+                    "security": [{"BearerAuth": []}],
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["persona", "message"],
+                                    "properties": {
+                                        "persona": {"type": "string"},
+                                        "message": {"type": "string"},
+                                        "user_id": {"type": "string"}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {"200": {"description": "Full agent response"}}
+                }
+            },
+            "/api/personas": {
+                "get": {
+                    "summary": "List all personas",
+                    "security": [{"BearerAuth": []}],
+                    "responses": {"200": {"description": "Persona list"}}
+                }
+            },
+            "/api/clone": {
+                "post": {
+                    "summary": "Clone a persona",
+                    "security": [{"BearerAuth": []}],
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["source", "new_name"],
+                                    "properties": {
+                                        "source": {"type": "string"},
+                                        "new_name": {"type": "string"}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {"200": {"description": "Cloned"}}
+                }
+            },
+            "/api/memory/{persona}": {
+                "get": {
+                    "summary": "Get persona memory",
+                    "security": [{"BearerAuth": []}],
+                    "parameters": [{"name": "persona", "in": "path", "required": True, "schema": {"type": "string"}}],
+                    "responses": {"200": {"description": "Memory data"}}
+                },
+                "post": {
+                    "summary": "Add memory",
+                    "security": [{"BearerAuth": []}],
+                    "parameters": [{"name": "persona", "in": "path", "required": True, "schema": {"type": "string"}}],
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "content": {"type": "string"},
+                                        "event_type": {"type": "string"},
+                                        "importance": {"type": "integer"}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {"200": {"description": "Added"}}
+                }
+            },
+            "/api/ccv3/{persona}": {
+                "get": {
+                    "summary": "Export CCv3 character card",
+                    "security": [{"BearerAuth": []}],
+                    "parameters": [{"name": "persona", "in": "path", "required": True, "schema": {"type": "string"}}],
+                    "responses": {"200": {"description": "CCv3 JSON"}}
+                }
+            },
+            "/api/debate": {
+                "post": {
+                    "summary": "Two-persona debate",
+                    "security": [{"BearerAuth": []}],
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["persona1", "persona2", "topic"],
+                                    "properties": {
+                                        "persona1": {"type": "string"},
+                                        "persona2": {"type": "string"},
+                                        "topic": {"type": "string"}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {"200": {"description": "Debate result"}}
+                }
+            },
+            "/api/key": {
+                "get": {
+                    "summary": "List API keys",
+                    "security": [{"BearerAuth": []}],
+                    "responses": {"200": {"description": "Key list"}}
+                }
+            }
+        },
+        "components": {
+            "securitySchemes": {
+                "BearerAuth": {
+                    "type": "http",
+                    "scheme": "bearer",
+                    "description": "API Key (Bearer token)"
+                }
+            }
+        }
+    }
+
+    # ========================================================
+    # Routes
+    # ========================================================
+
+    @app.route("/health")
     def health():
+        keys_info = {}
+        if SECURITY_AVAILABLE:
+            keys_info = get_security()["key_manager"].get_stats()
         return jsonify({
-            'status': 'ok',
-            'port': port,
-            'time': datetime.now().isoformat(),
-            'distiller': 'ready' if d else 'initializing'
+            "status": "ok",
+            "version": "2.5.0",
+            "security_enabled": SECURITY_AVAILABLE and require_auth,
+            "port": port,
+            "time": datetime.now().isoformat(),
+            "keys": keys_info,
         })
 
-    # ===== 聊天 API =====
-    @app.route('/api/chat', methods=['POST'])
+    # Swagger UI
+    if SWAGGER_AVAILABLE:
+        SWAGGER_URL = '/docs'
+        API_URL = f"/openapi.json"
+        app.register_blueprint(
+            get_swaggerui_blueprint(SWAGGER_URL, API_URL),
+            url_prefix=SWAGGER_URL
+        )
+
+        @app.route("/openapi.json")
+        def swagger_json():
+            return jsonify(OPENAPI_SCHEMA)
+
+    @app.route("/docs")
+    def docs():
+        return jsonify({
+            "title": "DistillAI API Documentation",
+            "version": "2.5.0",
+            "swagger_ui": "/docs",
+            "openapi_schema": "/openapi.json",
+            "security": "Bearer token (Authorization header)",
+            "endpoints": list(OPENAPI_SCHEMA["paths"].keys()),
+            "example_key": "distill_xxxxxxxxxxxxxxxxxxxx (generate via /api/key)"
+        })
+
+    # ---- Chat ----
+
+    @app.route("/api/chat", methods=["POST"])
+    @secure_require_key
+    @secure_require_role("read")
     def chat():
-        """POST /api/chat {"persona": "巴菲特", "message": "最近市场怎么样"}"""
-        data = request.get_json() or {}
-        persona = data.get('persona')
-        message = data.get('message', '')
-        user_id = data.get('user_id', 'api')
-
-        if not persona or not message:
-            return jsonify({'error': 'persona and message required'}), 400
-
+        data = getattr(request, "_secured_data", None) or request.get_json() or {}
+        persona = data.get("persona", "沙雕网友")
+        message = data.get("message", "")
+        user_id = data.get("user_id", "api_user")
         try:
-            dist = get_distiller()
-            if persona == '_agent':
-                # 使用Agent.run() (带工具+情感)
-                agent = dist.create_spawn(data.get('agent_name', '巴菲特'))
-                result = agent.run(message, user_id=user_id, verbose=False)
-                return jsonify({
-                    'reply': result['reply'],
-                    'emotion': result['emotion'],
-                    'tools_used': result['tools_used'],
-                    'persona': agent.persona_name
-                })
-            else:
-                reply = dist.chat(persona, message)
-                return jsonify({'reply': reply, 'persona': persona})
-
+            reply = distiller.chat(persona, message, user_id=user_id)
+            return jsonify({"reply": reply, "persona": persona})
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            return jsonify({"error": str(e)}), 500
 
-    # ===== Agent模式 (带工具+记忆) =====
-    @app.route('/api/agent/chat', methods=['POST'])
+    @app.route("/api/agent/chat", methods=["POST"])
+    @secure_require_key
+    @secure_require_role("read")
     def agent_chat():
-        """POST /api/agent/chat {"persona": "巴菲特", "message": "腾讯多少", "user_id": "owner"}"""
-        data = request.get_json() or {}
-        persona = data.get('persona', '巴菲特')
-        message = data.get('message', '')
-        user_id = data.get('user_id', 'default')
-
+        data = getattr(request, "_secured_data", None) or request.get_json() or {}
+        persona = data.get("persona", "沙雕网友")
+        message = data.get("message", "")
+        user_id = data.get("user_id", "api_user")
         try:
-            agent = get_distiller().create_spawn(persona)
-            result = agent.run(message, user_id=user_id, verbose=False)
-            return jsonify({
-                'reply': result['reply'],
-                'emotion': result['emotion'],
-                'emotion_intensity': result.get('emotion_intensity', 0),
-                'tools_used': result['tools_used'],
-                'thinking': result.get('thinking', '')[:200],
-                'persona': agent.persona_name
-            })
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
-
-    # ===== 分身管理 =====
-    @app.route('/api/spawn/<persona_name>', methods=['GET'])
-    def spawn_info(persona_name):
-        """获取分身信息"""
-        try:
-            dist = get_distiller()
-            agent = dist.create_spawn(persona_name)
-            return jsonify({
-                'persona': persona_name,
-                'tools': [t.name for t in agent._tools],
-                'avatar': agent.avatar,
-                'core_identity': str(agent.core_identity)[:100]
-            })
-        except Exception as e:
-            return jsonify({'error': str(e)}), 404
-
-    @app.route('/api/spawn/<persona_name>/reset', methods=['POST'])
-    def reset_spawn(persona_name):
-        """重置分身对话上下文"""
-        data = request.get_json() or {}
-        user_id = data.get('user_id', 'default')
-        try:
-            dist = get_distiller()
-            agent = dist.create_spawn(persona_name)
-            agent.reset(user_id=user_id)
-            return jsonify({'status': 'reset', 'persona': persona_name, 'user_id': user_id})
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
-
-    # ===== 分身克隆/合并 =====
-    @app.route('/api/clone', methods=['POST'])
-    def clone():
-        """POST /api/clone {"source": "巴菲特", "new_name": "价值投资者"}"""
-        data = request.get_json() or {}
-        source = data.get('source')
-        new_name = data.get('new_name')
-        if not source or not new_name:
-            return jsonify({'error': 'source and new_name required'}), 400
-        try:
-            dist = get_distiller()
-            agent = dist.clone_persona(source, new_name)
-            return jsonify({'status': 'cloned', 'new_persona': new_name, 'tools': [t.name for t in agent._tools]})
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
-
-    @app.route('/api/merge', methods=['POST'])
-    def merge():
-        """POST /api/merge {"name1": "巴菲特", "name2": "禅师", "new_name": "投资禅师"}"""
-        data = request.get_json() or {}
-        name1 = data.get('name1')
-        name2 = data.get('name2')
-        new_name = data.get('new_name')
-        if not all([name1, name2, new_name]):
-            return jsonify({'error': 'name1, name2, new_name required'}), 400
-        try:
-            dist = get_distiller()
-            agent = dist.merge_personas(name1, name2, new_name)
-            return jsonify({'status': 'merged', 'new_persona': new_name})
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
-
-    # ===== 分身分享 =====
-    @app.route('/api/share/<persona_name>', methods=['GET'])
-    def share(persona_name):
-        """生成分身分享链接"""
-        try:
-            link = get_distiller().share_persona(persona_name)
-            return jsonify({'share_link': link, 'persona': persona_name})
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
-
-    @app.route('/api/import', methods=['POST'])
-    def import_persona():
-        """POST /api/import {"link": "distill://...", "new_name": "我的分身"}"""
-        data = request.get_json() or {}
-        link = data.get('link')
-        new_name = data.get('new_name')
-        if not link:
-            return jsonify({'error': 'link required'}), 400
-        try:
-            agent = from_share_link(link)
-            return jsonify({'status': 'imported', 'persona': agent.persona_name})
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
-
-    # ===== 记忆管理 =====
-    @app.route('/api/memory/<persona_name>', methods=['GET'])
-    def get_memory(persona_name):
-        """获取分身记忆"""
-        try:
-            dist = get_distiller()
-            agent = dist.create_spawn(persona_name)
-            mem = agent._memory
-            return jsonify({
-                'persona': persona_name,
-                'events_count': len(mem.get_events()),
-                'history_turns': len(mem._history),
-                'recent_events': [e['content'] for e in mem.get_events()[:5]]
-            })
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
-
-    @app.route('/api/memory/<persona_name>', methods=['POST'])
-    def add_memory():
-        """POST /api/memory {"event_type": "custom", "content": "用户今天买了茅台"}"""
-        data = request.get_json() or {}
-        content = data.get('content')
-        event_type = data.get('event_type', 'custom')
-        importance = data.get('importance', 2)
-        persona_name = request.view_args['persona_name']
-
-        try:
-            dist = get_distiller()
-            agent = dist.create_spawn(persona_name)
-            agent.remember(user_id='api', what=content, event_type=event_type)
-            return jsonify({'status': 'added', 'persona': persona_name})
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
-
-    # ===== 市场 =====
-    @app.route('/api/market/list', methods=['GET'])
-    def market_list():
-        """列出本地市场的分身"""
-        try:
-            dist = get_distiller()
-            market = dist.get_market()
-            listings = market.browse()
-            return jsonify({'count': len(listings), 'listings': [
-                {'id': l['id'], 'name': l.get('card', {}).get('name', '?'),
-                 'tags': l.get('tags', []), 'rating': l.get('rating', 0)}
-                for l in listings
-            ]})
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
-
-    @app.route('/api/market/publish', methods=['POST'])
-    def market_publish():
-        """POST /api/market/publish {"persona": "巴菲特", "description": "...", "tags": ["投资"]}"""
-        data = request.get_json() or {}
-        persona = data.get('persona')
-        desc = data.get('description', '')
-        tags = data.get('tags', [])
-        try:
-            dist = get_distiller()
-            agent = dist.create_spawn(persona)
-            market = dist.get_market()
-            listing_id = market.publish(agent, description=desc, tags=tags)
-            return jsonify({'status': 'published', 'listing_id': listing_id})
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
-
-    # ===== 对比/辩论 =====
-    @app.route('/api/compare', methods=['POST'])
-    def compare():
-        """POST /api/compare {"personas": ["巴菲特", "禅师"], "question": "50万怎么投"}"""
-        data = request.get_json() or {}
-        personas = data.get('personas', [])
-        question = data.get('question', '')
-        if not personas or not question:
-            return jsonify({'error': 'personas and question required'}), 400
-        try:
-            dist = get_distiller()
-            results = dist.compare(personas, question)
-            return jsonify({'results': {k: v[:300] for k, v in results.items()}})
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
-
-    @app.route('/api/debate', methods=['POST'])
-    def debate():
-        """POST /api/debate {"persona1": "巴菲特", "persona2": "禅师", "topic": "要不要辞职创业"}"""
-        data = request.get_json() or {}
-        p1 = data.get('persona1')
-        p2 = data.get('persona2')
-        topic = data.get('topic')
-        if not all([p1, p2, topic]):
-            return jsonify({'error': 'persona1, persona2, topic required'}), 400
-        try:
-            dist = get_distiller()
-            result = dist.debate(p1, p2, topic)
+            result = distiller.agent_chat(persona, message, user_id=user_id)
             return jsonify(result)
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            return jsonify({"error": str(e)}), 500
 
-    # ===== CCv3导出 =====
-    @app.route('/api/ccv3/<persona_name>', methods=['GET'])
-    def export_ccv3(persona_name):
-        """导出CCv3格式角色卡"""
+    # ---- Personas ----
+
+    @app.route("/api/personas")
+    @secure_require_key
+    @secure_require_role("read")
+    def list_personas():
+        personas = distiller.list_personas()
+        return jsonify({"count": len(personas), "personas": personas})
+
+    @app.route("/api/personas/<name>")
+    @secure_require_key
+    @secure_require_role("read")
+    def get_persona(name: str):
+        card = distiller.get_persona_card(name)
+        if card:
+            return jsonify(card)
+        return jsonify({"error": "Persona not found"}), 404
+
+    # ---- Clone/Merge/Share ----
+
+    @app.route("/api/clone", methods=["POST"])
+    @secure_require_key
+    @secure_require_role("write")
+    def clone():
+        data = request.get_json() or {}
+        source = data.get("source")
+        new_name = data.get("new_name")
+        if not source or not new_name:
+            return jsonify({"error": "source and new_name required"}), 400
         try:
-            dist = get_distiller()
-            ccv3 = dist.export_ccv3(persona_name)
+            distiller.clone_persona(source, new_name)
+            return jsonify({"ok": True, "persona": new_name})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/merge", methods=["POST"])
+    @secure_require_key
+    @secure_require_role("write")
+    def merge():
+        data = request.get_json() or {}
+        name1 = data.get("name1")
+        name2 = data.get("name2")
+        new_name = data.get("new_name")
+        if not all([name1, name2, new_name]):
+            return jsonify({"error": "name1, name2, new_name required"}), 400
+        try:
+            distiller.merge_personas(name1, name2, new_name)
+            return jsonify({"ok": True, "persona": new_name})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/share/<name>")
+    @secure_require_key
+    @secure_require_role("read")
+    def share(name: str):
+        try:
+            link = share_link(name)
+            return jsonify({"share_link": link})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/import", methods=["POST"])
+    @secure_require_key
+    @secure_require_role("write")
+    def import_persona():
+        data = request.get_json() or {}
+        link = data.get("link")
+        new_name = data.get("new_name")
+        if not link:
+            return jsonify({"error": "link required"}), 400
+        try:
+            from_share_link(link, new_name)
+            return jsonify({"ok": True, "persona": new_name})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    # ---- Memory ----
+
+    @app.route("/api/memory/<name>", methods=["GET"])
+    @secure_require_key
+    @secure_require_role("read")
+    def get_memory(name: str):
+        try:
+            mem = distiller.get_memory(name)
+            return jsonify(mem)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/memory/<name>", methods=["POST"])
+    @secure_require_key
+    @secure_require_role("write")
+    def add_memory(name: str):
+        data = request.get_json() or {}
+        content = data.get("content", "")
+        event_type = data.get("event_type", "custom")
+        importance = data.get("importance", 2)
+        try:
+            distiller.add_memory(name, content, event_type=event_type, importance=importance)
+            return jsonify({"ok": True})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    # ---- Market ----
+
+    @app.route("/api/market/list")
+    @secure_require_key
+    @secure_require_role("read")
+    def market_list():
+        try:
+            from distill.spawn import DistillMarket
+            market = DistillMarket()
+            listings = market.list_public()
+            return jsonify({"count": len(listings), "listings": listings})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/market/publish", methods=["POST"])
+    @secure_require_key
+    @secure_require_role("write")
+    def market_publish():
+        data = request.get_json() or {}
+        persona = data.get("persona")
+        if not persona:
+            return jsonify({"error": "persona required"}), 400
+        try:
+            from distill.spawn import DistillMarket
+            market = DistillMarket()
+            url = market.publish(persona)
+            return jsonify({"ok": True, "url": url})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    # ---- Compare/Debate ----
+
+    @app.route("/api/compare", methods=["POST"])
+    @secure_require_key
+    @secure_require_role("read")
+    def compare():
+        data = request.get_json() or {}
+        personas = data.get("personas", [])
+        question = data.get("question", "")
+        if len(personas) < 2:
+            return jsonify({"error": "At least 2 personas required"}), 400
+        try:
+            results = {}
+            for p in personas:
+                reply = distiller.chat(p, question)
+                results[p] = reply
+            return jsonify({"question": question, "results": results})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/debate", methods=["POST"])
+    @secure_require_key
+    @secure_require_role("read")
+    def debate():
+        data = request.get_json() or {}
+        p1 = data.get("persona1")
+        p2 = data.get("persona2")
+        topic = data.get("topic")
+        if not all([p1, p2, topic]):
+            return jsonify({"error": "persona1, persona2, topic required"}), 400
+        try:
+            intro1 = distiller.chat(p1, f"开场陈述: {topic}")
+            intro2 = distiller.chat(p2, f"开场陈述: {topic}")
+            rebuttal1 = distiller.chat(p1, f"反驳对方: {intro2[:200]}")
+            rebuttal2 = distiller.chat(p2, f"反驳对方: {intro1[:200]}")
+            return jsonify({
+                "topic": topic,
+                p1: {"opening": intro1, "rebuttal": rebuttal1},
+                p2: {"opening": intro2, "rebuttal": rebuttal2}
+            })
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    # ---- CCv3 Export ----
+
+    @app.route("/api/ccv3/<name>")
+    @secure_require_key
+    @secure_require_role("read")
+    def ccv3_export(name: str):
+        try:
+            card = distiller.get_persona_card(name)
+            if not card:
+                return jsonify({"error": "Persona not found"}), 404
+
+            # Build full CCv3 format
+            thinking = card.get("thinking_prompt", "")
+            samples = card.get("speech_samples", [])
+
+            ccv3 = {
+                "spec": "CCv3.0",
+                "name": name,
+                "description": card.get("core_identity", {}).get("description", ""),
+                "avatar": card.get("avatar", ""),
+                "personality": card.get("values", [])[:5],
+                "first_msg": samples[0] if samples else f"你好，我是{name}。有什么可以帮你的吗？",
+                "messages": {
+                    "examples": [[s, f"[{name}的回应: ...]"] for s in samples[:5]]
+                },
+                "creators": {"name": "DistillAI", "url": "https://github.com/6ss6com/distill-ai"},
+                "character_version": "1.0",
+                "alternating_io": True,
+                "tags": card.get("knowledge", []) + card.get("values", []),
+                "meta": {
+                    "source": "distillai",
+                    "version": "2.5.0",
+                    "exported_at": datetime.now().isoformat()
+                },
+                "# NOTE": "Full CCv3 format. Import into SillyTavern or any CCv3-compatible client."
+            }
             return jsonify(ccv3)
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            return jsonify({"error": str(e)}), 500
 
-    # ===== Persona列表 =====
-    @app.route('/api/personas', methods=['GET'])
-    def list_personas():
-        """列出所有可用人格"""
-        try:
-            dist = get_distiller()
-            personas = dist.list_personas()
-            return jsonify({'count': len(personas), 'personas': personas})
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
+    # ---- API Key Management ----
+
+    @app.route("/api/key", methods=["GET"])
+    @secure_require_key
+    @secure_require_role("admin")
+    def list_keys():
+        if not SECURITY_AVAILABLE:
+            return jsonify({"error": "Security not available"}), 500
+        keys = get_security()["key_manager"].list_keys()
+        stats = get_security()["key_manager"].get_stats()
+        return jsonify({"keys": keys, "stats": stats})
+
+    @app.route("/api/key", methods=["POST"])
+    @secure_require_key
+    @secure_require_role("admin")
+    def create_key():
+        if not SECURITY_AVAILABLE:
+            return jsonify({"error": "Security not available"}), 500
+        data = request.get_json() or {}
+        name = data.get("name", "new_key")
+        role = data.get("role", "read")
+        expires = data.get("expires_days", 365)
+        key_id, full_key = get_security()["key_manager"].generate_key(name, role, expires)
+        return jsonify({"key_id": key_id, "api_key": full_key, "role": role})
+
+    @app.route("/api/key/<key_id>", methods=["DELETE"])
+    @secure_require_key
+    @secure_require_role("admin")
+    def revoke_key(key_id: str):
+        if not SECURITY_AVAILABLE:
+            return jsonify({"error": "Security not available"}), 500
+        ok = get_security()["key_manager"].revoke_key(key_id)
+        return jsonify({"ok": ok})
+
+    @app.route("/api/key/generate-default")
+    def generate_default_key():
+        """Generate default admin key (no auth required for first-time setup)"""
+        if not SECURITY_AVAILABLE:
+            return jsonify({"error": "Security not available"}), 500
+        key_id, full_key = ensure_default_key()
+        if not full_key:
+            return jsonify({"error": "Default key already exists or setup failed"}), 400
+        return jsonify({"key_id": key_id, "api_key": full_key, "warning": "Store this key securely. It will not be shown again."})
 
     return app
 
 
-# ===== Webhook Server (端口5001) =====
-def create_webhook_server():
-    """飞书/Discord/Telegram Webhook处理服务器"""
+# ============================================================
+# Webhook Server (port 5001)
+# ============================================================
+
+def create_webhook_app(port: int = 5001):
     app = Flask(__name__)
-    app.config['SECRET_KEY'] = os.environ.get('WEBHOOK_SECRET', 'distill-webhook-secret')
+    distiller = Distiller()
 
-    d = None
-    def get_distiller():
-        nonlocal d
-        if d is None:
-            d = Distiller()
-        return d
-
-    # ===== 飞书 Webhook =====
-    @app.route('/webhook/feishu', methods=['POST'])
-    def feishu_webhook():
-        """接收飞书 events API 回调"""
-        data = request.get_json() or {}
-        # 验证签名(如果配置了)
-        # event = data.get('event', {})
-        # schema验证
+    @app.route("/webhook/feishu", methods=["POST"])
+    def feishu():
         try:
-            # 提取用户消息
-            msg_type = data.get('msg_type', 'text')
-            content = data.get('content', '{}')
-            if msg_type == 'text':
-                import json as json_mod
-                text = json_mod.loads(content).get('text', '')
-            else:
-                return jsonify({'error': 'unsupported msg_type'}), 400
-
-            # 获取from_user_id
-            sender = data.get('sender', {})
-            user_id = sender.get('sender_id', {}).get('open_id', 'feishu_user')
-
-            # 使用默认人格或指定
-            dist = get_distiller()
-            persona = data.get('persona', '沙雕网友')
-            agent = dist.create_spawn(persona)
-            result = agent.run(text, user_id=user_id, verbose=False)
-
-            return jsonify({
-                'status': 'ok',
-                'reply': result['reply'],
-                'emotion': result['emotion']
-            })
+            data = request.get_json() or {}
+            content = data.get("content", "")
+            sender = data.get("sender", {})
+            open_id = sender.get("sender_id", {}).get("open_id", "unknown")
+            # Simple reply
+            reply = distiller.chat("沙雕网友", content[:200], user_id=open_id)
+            return jsonify({"reply": reply})
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            return jsonify({"error": str(e)}), 500
 
-    # ===== 飞书 Message API (被动回复) =====
-    @app.route('/webhook/feishu/receive', methods=['POST'])
-    def feishu_receive():
-        """
-        飞书 消息回调租户授权模式
-        POST body: { message: {...}, ... }
-        """
-        data = request.get_json() or {}
+    @app.route("/webhook/telegram", methods=["POST"])
+    def telegram():
         try:
-            msg = data.get('message', {})
-            content_str = msg.get('content', '{}')
-            import json as json_mod
-            content = json_mod.loads(content_str)
-            text = content.get('text', '').strip()
-            user_open_id = msg.get('open_id', 'unknown')
-
-            if not text:
-                return jsonify({'status': 'ignored'})
-
-            # 构建回复
-            dist = get_distiller()
-            persona = data.get('persona', '沙雕网友')
-            agent = dist.create_spawn(persona)
-            result = agent.run(text, user_id=user_open_id, verbose=False)
-
-            # 返回reply用于后续发消息API调用
-            return jsonify({
-                'status': 'ok',
-                'reply': result['reply'],
-                'emotion': result['emotion'],
-                'tools': result['tools_used']
-            })
+            data = request.get_json() or {}
+            msg = data.get("message", {})
+            text = msg.get("text", "")
+            chat_id = msg.get("chat", {}).get("id", "unknown")
+            reply = distiller.chat("沙雕网友", text[:200], user_id=str(chat_id))
+            return jsonify({"reply": reply})
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            return jsonify({"error": str(e)}), 500
 
-    # ===== Discord Webhook =====
-    @app.route('/webhook/discord', methods=['POST'])
-    def discord_webhook():
-        """Discord interaction webhook (slash commands / messages)"""
-        data = request.get_json() or {}
+    @app.route("/webhook/discord", methods=["POST"])
+    def discord():
         try:
-            # Discord message
-            if data.get('t') == 'MESSAGE_CREATE' or 'content' in data:
-                content = data.get('content', '')
-                author = data.get('author', {})
-                user_id = author.get('id', 'discord')
-
-                if not content or content.startswith('!'):
-                    return jsonify({'status': 'ignored'})
-
-                dist = get_distiller()
-                persona = data.get('persona', '沙雕网友')
-                agent = dist.create_spawn(persona)
-                result = agent.run(content, user_id=user_id, verbose=False)
-
-                return jsonify({
-                    'reply': result['reply'],
-                    'emotion': result['emotion']
-                })
-            return jsonify({'status': 'ok'})
+            data = request.get_json() or {}
+            content = data.get("content", "")
+            user_id = data.get("author", {}).get("id", "unknown")
+            reply = distiller.chat("沙雕网友", content[:200], user_id=str(user_id))
+            return jsonify({"reply": reply})
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            return jsonify({"error": str(e)}), 500
 
-    # ===== Telegram Bot Webhook =====
-    @app.route('/webhook/telegram', methods=['POST'])
-    def telegram_webhook():
-        """Telegram bot webhook handler"""
-        data = request.get_json() or {}
+    @app.route("/webhook/generic", methods=["POST"])
+    def generic():
         try:
-            update = data.get('message', {})
-            text = update.get('text', '')
-            chat_id = update.get('chat', {}).get('id', 'unknown')
-            user_id = str(update.get('from', {}).get('id', 'telegram'))
-
-            if not text:
-                return jsonify({'status': 'ignored'})
-
-            dist = get_distiller()
-            persona = data.get('persona', '沙雕网友')
-            agent = dist.create_spawn(persona)
-            result = agent.run(text, user_id=user_id, verbose=False)
-
-            return jsonify({
-                'status': 'ok',
-                'reply': result['reply'],
-                'chat_id': chat_id
-            })
+            data = request.get_json() or {}
+            message = data.get("message", "")
+            user_id = data.get("user_id", "generic")
+            persona = data.get("persona", "沙雕网友")
+            reply = distiller.chat(persona, message[:200], user_id=user_id)
+            return jsonify({"reply": reply})
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
-
-    # ===== 通用Webhook (可用于自定义集成) =====
-    @app.route('/webhook/generic', methods=['POST'])
-    def generic_webhook():
-        """通用Webhook: POST {"persona": "...", "message": "...", "user_id": "..."}"""
-        data = request.get_json() or {}
-        persona = data.get('persona', '沙雕网友')
-        message = data.get('message', '')
-        user_id = data.get('user_id', 'generic')
-
-        if not message:
-            return jsonify({'error': 'message required'}), 400
-
-        try:
-            dist = get_distiller()
-            agent = dist.create_spawn(persona)
-            result = agent.run(message, user_id=user_id, verbose=False)
-            return jsonify({
-                'reply': result['reply'],
-                'emotion': result['emotion'],
-                'tools_used': result['tools_used']
-            })
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
-
-    @app.route('/health', methods=['GET'])
-    def health():
-        return jsonify({'status': 'webhook_server_ok', 'time': datetime.now().isoformat()})
+            return jsonify({"error": str(e)}), 500
 
     return app
 
 
-# ===== 启动器 =====
-def run_multi_port():
-    """启动多端口服务器"""
-    from werkzeug.serving import run_simple
+# ============================================================
+# Multi-Port Launch
+# ============================================================
 
-    print('=' * 60)
-    print('DistillAI Multi-Port API Server')
-    print('=' * 60)
-    print('REST API:     http://localhost:5000')
-    print('Webhooks:     http://localhost:5001')
-    print('API Docs:     http://localhost:5000/docs')
-    print()
-    print('Endpoints:')
-    print('  POST /api/chat          - 简单聊天')
-    print('  POST /api/agent/chat   - Agent聊天(带工具)')
-    print('  POST /api/clone         - 克隆分身')
-    print('  POST /api/merge         - 合并分身')
-    print('  GET  /api/share/<name>  - 生成分享链接')
-    print('  POST /api/import        - 导入分享链接')
-    print('  POST /webhook/generic   - 通用Webhook')
-    print('  POST /webhook/feishu    - 飞书回调')
-    print('  POST /webhook/telegram  - Telegram机器人')
-    print('  POST /webhook/discord   - Discord机器人')
-    print('=' * 60)
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="DistillAI API Server v2.5")
+    parser.add_argument("--port", type=int, default=5000, help="REST API port (default 5000)")
+    parser.add_argument("--webhook-port", type=int, default=5001, help="Webhook port (default 5001)")
+    parser.add_argument("--no-auth", action="store_true", help="Disable API key authentication")
+    parser.add_argument("--no-rate-limit", action="store_true", help="Disable rate limiting")
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind")
+    args = parser.parse_args()
 
-    # 使用threading分别启动
-    import threading
+    print(f"DistillAI API Server v2.5")
+    print(f"REST API: http://{args.host}:{args.port}")
+    print(f"Webhooks: http://{args.host}:{args.webhook_port}")
+    print(f"Swagger UI: http://{args.host}:{args.port}/docs")
+    print(f"Auth: {'Disabled' if args.no_auth else 'Enabled (Bearer token)'}")
+    print(f"Rate limit: {'Disabled' if args.no_rate_limit else 'Enabled'}")
 
-    app1 = create_app(5000)
-    app2 = create_webhook_server()
+    # Start webhook server in background
+    if args.webhook_port != args.port:
+        from werkzeug.serving import make_server
+        webhook_app = create_webhook_app(args.webhook_port)
+        server = make_server(args.host, args.webhook_port, webhook_app, threaded=True)
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        print(f"[OK] Webhook server started on :{args.webhook_port}")
 
-    t1 = threading.Thread(target=lambda: app1.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False))
-    t2 = threading.Thread(target=lambda: app2.run(host='0.0.0.0', port=5001, debug=False, use_reloader=False))
-
-    t1.start()
-    t2.start()
-
-    print('Servers started! Press Ctrl+C to stop.')
-
-    try:
-        t1.join()
-        t2.join()
-    except KeyboardInterrupt:
-        print('\nShutting down...')
+    # Start REST API
+    app = create_app(
+        port=args.port,
+        require_auth=not args.no_auth,
+        rate_limit=not args.no_rate_limit
+    )
+    print(f"[OK] REST API server starting on :{args.port}")
+    app.run(host=args.host, port=args.port, debug=False, threaded=True)
 
 
-if __name__ == '__main__':
-    run_multi_port()
+if __name__ == "__main__":
+    main()
