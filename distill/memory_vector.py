@@ -238,12 +238,19 @@ class VectorMemory:
         scores.sort(key=lambda x: x["relevance_score"], reverse=True)
         return scores[:k]
 
-    def get_relevant(self, context: str = None, last_n: int = 5) -> str:
-        """Get formatted relevant memories for context injection"""
+    def get_relevant(self, context: str = None, k: int = 5, last_n: int = None) -> str:
+        """Get formatted relevant memories for context injection.
+
+        Args:
+            context: Query string for semantic search (optional)
+            k: Number of results to return (default 5)
+            last_n: Alias for k (for backward compatibility)
+        """
+        limit = last_n if last_n is not None else k
         if context:
-            results = self.search(context, k=last_n)
+            results = self.search(context, k=limit)
         else:
-            results = self.metadata[-last_n:]
+            results = self.metadata[-limit:]
             for r in results:
                 r["relevance_score"] = r.get("importance", 1)
 
