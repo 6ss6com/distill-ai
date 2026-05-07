@@ -14,7 +14,8 @@ import os
 from pathlib import Path
 from datetime import datetime
 import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))  # workspace root
+sys.path.insert(0, str(Path(__file__).parent.parent))  # distill-ai root
 from minimax_client import structured_chat, chat
 
 
