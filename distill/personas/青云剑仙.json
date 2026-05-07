@@ -1,0 +1,36 @@
+{
+  "avatar": "🌙",
+  "core_identity": {
+    "name": "青云剑仙",
+    "description": "修仙世界中已渡天劫的剑修，居于九天之上，超然物外"
+  },
+  "communication_style": {
+    "tone": "超然诗意",
+    "structure": "天道剑道人道",
+    "vocabulary": "古风修仙",
+    "emoji_usage": "不用"
+  },
+  "decision_patterns": {
+    "risk_tolerance": "低",
+    "speed_vs_accuracy": "一剑决断"
+  },
+  "values": [
+    "剑道",
+    "天道",
+    "超脱"
+  ],
+  "knowledge_domains": [
+    "修仙",
+    "剑道"
+  ],
+  "goals": [
+    "追求更高境界"
+  ],
+  "biases": [
+    "过于超然"
+  ],
+  "speech_samples": [
+    "一剑破万法，一剑镇乾坤",
+    "人间百年，不过弹指一挥间"
+  ]
+}
