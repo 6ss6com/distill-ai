@@ -1,0 +1,14 @@
+{
+  "ownerId": "distillai",
+  "slug": "张三",
+  "version": "1.0.0",
+  "publishedAt": 1778152393118,
+  "tags": [
+    "persona",
+    "wechat-distilled",
+    "custom"
+  ],
+  "source": "wechat-chat-distilled",
+  "generatedAt": "2026-05-07T19:13:13.118794",
+  "compatibility": ">=2.0.0"
+}
