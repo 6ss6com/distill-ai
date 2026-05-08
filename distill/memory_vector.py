@@ -193,6 +193,7 @@ class VectorMemory:
             "importance": (metadata or {}).get("importance", 1),
             "tags": (metadata or {}).get("tags", []),
             "source": (metadata or {}).get("source", "conversation"),
+            "user_id": (metadata or {}).get("user_id", "default"),
         })
         self._save()
         return mem_id
