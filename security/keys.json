@@ -1,0 +1,13 @@
+{
+  "distill_2029421382fcde6f": {
+    "name": "test",
+    "role": "admin",
+    "key_hash": "e9b1f4ecce0feb076ade15fbefde85466813f613e0d4408a7a90fa31eb33fdd9",
+    "created_at": "2026-05-07T19:14:27.711723",
+    "expires_at": "2027-05-07T19:14:27.711723",
+    "rate_limit": 200,
+    "usage_count": 0,
+    "last_used": null,
+    "active": true
+  }
+}
